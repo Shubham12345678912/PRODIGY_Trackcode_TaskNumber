@@ -1,0 +1,368 @@
+# IMPORTANT: RUN THIS CELL IN ORDER TO IMPORT YOUR KAGGLE DATA SOURCES,
+# THEN FEEL FREE TO DELETE THIS CELL.
+# NOTE: THIS NOTEBOOK ENVIRONMENT DIFFERS FROM KAGGLE'S PYTHON
+# ENVIRONMENT SO THERE MAY BE MISSING LIBRARIES USED BY YOUR
+# NOTEBOOK.
+import kagglehub
+dansbecker_food_101_path = kagglehub.dataset_download('dansbecker/food-101')
+
+print('Data source import complete.')
+import numpy as np
+import pandas as pd 
+
+import os
+import os
+import torch
+import pandas as pd
+import numpy as np
+from sklearn.utils import shuffle
+from PIL import Image
+import torchvision
+from torchvision import datasets, transforms
+from torch.utils.data import Dataset, DataLoader
+import requests as reqs
+import torch.nn as nn
+from torchvision import models
+from tqdm import tqdm
+from torch.utils.checkpoint import checkpoint  # For gradient checkpointing
+from torch.cuda.amp import autocast, GradScaler  # For mixed-precision training
+import matplotlib.pyplot as plt
+import torch.utils.checkpoint as checkpoint
+from albumentations.pytorch import ToTensorV2
+import torch.optim.lr_scheduler as lr_scheduler
+import torch.optim as optim
+import zipfile
+import urllib.request
+import shutil
+import random
+from torch.optim.lr_scheduler import CosineAnnealingLR, SequentialLR, LinearLR
+from torchvision import datasets, transforms, models
+from torch.utils.data import DataLoader
+
+
+# Setting the device for PyTorch; use CUDA if available, else CPU
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(device)
+classes = open("/kaggle/input/food-101/food-101/food-101/meta/classes.txt", 'r').read().splitlines()
+classes_21 = classes[:20] + ['other']
+classes_21, len(classes_21)
+
+# Defining a custom label encoder for the classes
+class Label_encoder:
+    def __init__(self, labels):
+        self.labels = {label: idx for idx, label in enumerate(labels)}
+    def get_label(self, idx):
+        return list(self.labels.keys())[idx]
+    def get_idx(self, label):
+        return self.labels.get(label)
+
+# Initializing label encoder with 21 classes and testing its functionality
+encoder_21 = Label_encoder(classes_21)
+encoder_21.get_label(0), encoder_21.get_idx( encoder_21.get_label(0) )
+
+# Printing each class with its corresponding index
+for i in range(21):
+    print(encoder_21.get_label(i), encoder_21.get_idx( encoder_21.get_label(i) ))
+
+# Defining a custom dataset class for handling image data
+class Food21(Dataset):
+    def __init__(self, dataframe, transform=None):
+        self.dataframe = dataframe
+        self.transform = transform
+
+    def __len__(self):
+        return self.dataframe.shape[0]
+
+    def __getitem__(self, idx):
+        img_name = self.dataframe.path.iloc[idx]
+        image = Image.open(img_name)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        image = np.array(image)  # Convert to NumPy array for Albumentations
+
+        label = encoder_21.get_idx(self.dataframe.label.iloc[idx])
+
+        # Apply Albumentations transforms if available
+        if self.transform:
+            augmented = self.transform(image=image)  # Pass image as named argument
+            image = augmented["image"]
+
+        return image, label
+def prep_df(path: str) -> pd.DataFrame:
+    array = open(path, 'r').read().splitlines()
+    # Getting the full path for the images
+    img_path = "/kaggle/input/food-101/food-101/food-101/images/"
+    full_path = [img_path + img + ".jpg" for img in array]
+    # Splitting the image index from the label
+    imgs = []
+    for img in array:
+        img = img.split('/')
+        imgs.append(img)
+    imgs = np.array(imgs)
+    for idx, img in enumerate(imgs):
+        if encoder_21.get_idx(img[0]) is None:
+            imgs[idx, 0] = "other"      
+    # Converting the array to a data frame
+    imgs = pd.DataFrame(imgs[:, 0], imgs[:,1], columns=['label'])      
+    # Adding the full path to the data frame
+    imgs['path'] = full_path
+    # Randomly shuffling the order of the data in the dataframe
+    imgs = shuffle(imgs)
+    return imgs
+
+# Preparing training and testing dataframes
+train_imgs = prep_df('/kaggle/input/food-101/food-101/food-101/meta/train.txt')
+test_imgs = prep_df('/kaggle/input/food-101/food-101/food-101/meta/test.txt')
+# Printing the count of images per label in the training set
+print(train_imgs.groupby(["label"]).count())
+train_imgs = prep_df('/kaggle/input/food-101/food-101/food-101/meta/train.txt')
+test_imgs = prep_df('/kaggle/input/food-101/food-101/food-101/meta/test.txt')
+
+train_imgs.head(3)
+plt.figure(figsize=(20, 5))
+num_rows = 3
+num_cols = 8
+for idx in range(num_rows * num_cols):
+    random_idx = np.random.randint(0, train_imgs.shape[0])
+    img = plt.imread(train_imgs.path.iloc[random_idx])
+    label = train_imgs.label.iloc[random_idx]
+    ax = plt.subplot(num_rows, num_cols, idx + 1)
+    plt.imshow(img)
+    plt.title(label)
+    plt.axis("off")
+# Importing necessary libraries
+import os
+import torch
+import numpy as np
+import pandas as pd
+from torch import nn, optim
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms, models
+from tqdm import tqdm
+from sklearn.utils import shuffle
+from PIL import Image
+import random
+from torch.utils.checkpoint import checkpoint_sequential
+from torch.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import CosineAnnealingLR, SequentialLR, LinearLR
+
+# Setting device for PyTorch
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Reading class names and defining the first 20 classes + 'other'
+classes = open("/kaggle/input/food-101/food-101/food-101/meta/classes.txt", 'r').read().splitlines()
+classes_21 = classes[:20] + ['other']
+
+# Custom label encoder for 21 classes
+class Label_encoder:
+    def __init__(self, labels):
+        self.labels = {label: idx for idx, label in enumerate(labels)}
+    def get_label(self, idx):
+        return list(self.labels.keys())[idx]
+    def get_idx(self, label):
+        return self.labels.get(label)
+
+# Initialize label encoder
+encoder_21 = Label_encoder(classes_21)
+
+# Custom Dataset Class for handling image data
+class Food21(Dataset):
+    def __init__(self, dataframe, transform=None):
+        self.dataframe = dataframe
+        self.transform = transform
+
+    def __len__(self):
+        return self.dataframe.shape[0]
+
+    def __getitem__(self, idx):
+        img_name = self.dataframe.path.iloc[idx]
+        image = Image.open(img_name)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+
+        label = encoder_21.get_idx(self.dataframe.label.iloc[idx])
+
+        # Apply transforms without using a named argument for torchvision.transforms
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
+# Function to prepare a DataFrame from a given path with image paths and labels
+def prep_df(path: str) -> pd.DataFrame:
+    array = open(path, 'r').read().splitlines()
+    img_path = "/kaggle/input/food-101/food-101/food-101/images/"
+    full_path = [img_path + img + ".jpg" for img in array]
+    imgs = []
+    for img in array:
+        img = img.split('/')
+        imgs.append(img)
+    imgs = np.array(imgs)
+    for idx, img in enumerate(imgs):
+        if encoder_21.get_idx(img[0]) is None:
+            imgs[idx, 0] = "other"      
+    imgs = pd.DataFrame(imgs[:, 0], imgs[:,1], columns=['label'])      
+    imgs['path'] = full_path
+    imgs = shuffle(imgs)
+    return imgs
+
+# Preparing training and testing DataFrames
+train_imgs = prep_df('/kaggle/input/food-101/food-101/food-101/meta/train.txt')
+test_imgs = prep_df('/kaggle/input/food-101/food-101/food-101/meta/test.txt')
+
+# Custom cutout augmentation class
+class CutOut(object):
+    def __init__(self, n_holes, length):
+        self.n_holes = n_holes
+        self.length = length
+
+    def __call__(self, img):
+        h, w = img.size(1), img.size(2)
+        mask = np.ones((h, w), np.float32)
+
+        for _ in range(self.n_holes):
+            y = np.random.randint(h)
+            x = np.random.randint(w)
+            y1 = np.clip(y - self.length // 2, 0, h)
+            y2 = np.clip(y + self.length // 2, 0, h)
+            x1 = np.clip(x - self.length // 2, 0, w)
+            x2 = np.clip(x + self.length // 2, 0, w)
+            mask[y1: y2, x1: x2] = 0.
+
+        mask = torch.from_numpy(mask)
+        mask = mask.expand_as(img)
+        img = img * mask
+        return img
+# Data augmentation and transformations
+transform_train = transforms.Compose([
+    transforms.RandomResizedCrop(224),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    CutOut(n_holes=1, length=16)
+])
+
+transform_test = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+# Data loaders
+trainset = Food21(train_imgs, transform=transform_train)
+trainloader = DataLoader(trainset, batch_size=32, shuffle=True, num_workers=4)
+
+testset = Food21(test_imgs, transform=transform_test)
+testloader = DataLoader(testset, batch_size=32, shuffle=False, num_workers=4)
+# Gradient Checkpointed ResNet152 Model
+class CheckpointedResNet152(nn.Module):
+    def __init__(self, num_classes=21):
+        super(CheckpointedResNet152, self).__init__()
+        base_model = models.resnet152(weights='IMAGENET1K_V1')
+       
+        self.conv1 = base_model.conv1
+        self.bn1 = base_model.bn1
+        self.relu = base_model.relu
+        self.maxpool = base_model.maxpool
+
+        self.layer1 = base_model.layer1
+        self.layer2 = base_model.layer2
+        self.layer3 = base_model.layer3
+        self.layer4 = base_model.layer4
+       
+        self.avgpool = base_model.avgpool
+        self.fc = nn.Linear(base_model.fc.in_features, num_classes)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+       
+        x = checkpoint_sequential(self.layer1, segments=1, input=x)
+        x = checkpoint_sequential(self.layer2, segments=1, input=x)
+        x = checkpoint_sequential(self.layer3, segments=1, input=x)
+        x = checkpoint_sequential(self.layer4, segments=1, input=x)
+       
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+# Initialize model, criterion, optimizer, scaler, and scheduler
+model = CheckpointedResNet152(num_classes=21).to(device)
+scaler = GradScaler()
+model = nn.DataParallel(model)
+
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=5e-4)
+
+# Scheduler with warm-up and cosine annealing
+warmup_epochs = 3
+total_epochs = 11
+scheduler = SequentialLR(
+    optimizer,
+    schedulers=[
+        LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs),
+        CosineAnnealingLR(optimizer, T_max=total_epochs - warmup_epochs)
+    ],
+    milestones=[warmup_epochs]
+)
+
+# Training and testing functions
+def train(epoch):
+    model.train()
+    running_loss = 0.0
+    correct_train = 0
+    total_train = 0
+
+    for inputs, targets in tqdm(trainloader, desc=f"Training Epoch {epoch + 1}"):
+        inputs, targets = inputs.to(device), targets.to(device)
+        optimizer.zero_grad()
+
+        with autocast(device_type='cuda'):
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        running_loss += loss.item()
+        _, predicted = torch.max(outputs, 1)
+        total_train += targets.size(0)
+        correct_train += predicted.eq(targets).sum().item()
+
+    train_accuracy = 100. * correct_train / total_train
+    print(f'Training Loss: {running_loss/len(trainloader):.3f} | Training Accuracy: {train_accuracy:.2f}%')
+
+def test(epoch):
+    model.eval()
+    correct_test = 0
+    total_test = 0
+
+    with torch.no_grad():
+        for inputs, targets in tqdm(testloader, desc=f"Testing Epoch {epoch + 1}"):
+            inputs, targets = inputs.to(device), targets.to(device)
+            with autocast(device_type='cuda'):
+                outputs = model(inputs)
+            _, predicted = torch.max(outputs, 1)
+            total_test += targets.size(0)
+            correct_test += predicted.eq(targets).sum().item()
+
+    test_accuracy = 100. * correct_test / total_test
+    print(f'Test Accuracy after Epoch {epoch + 1}: {test_accuracy:.2f}%')
+    return test_accuracy
+
+# Training loop
+best_acc = 0.0
+
+for epoch in range(total_epochs):
+    train(epoch)
+    acc = test(epoch)
+    scheduler.step()
+
+    if acc > best_acc:
+        best_acc = acc
+        torch.save(model.state_dict(), 'resnet152_food21_best.pt')
+        print(f"Best model saved with accuracy: {best_acc:.2f}%")
+
+print("Training completed.")
